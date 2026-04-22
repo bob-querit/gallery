@@ -55,7 +55,10 @@ import androidx.compose.runtime.Composable
 import androidx.compose.runtime.getValue
 import androidx.compose.runtime.mutableStateOf
 import androidx.compose.runtime.remember
+import androidx.compose.runtime.rememberCoroutineScope
 import androidx.compose.runtime.setValue
+import kotlinx.coroutines.Dispatchers
+import kotlinx.coroutines.launch
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.focus.FocusRequester
@@ -73,6 +76,7 @@ import androidx.compose.ui.unit.dp
 import androidx.compose.ui.window.Dialog
 import com.google.ai.edge.gallery.BuildConfig
 import com.google.ai.edge.gallery.R
+import com.google.ai.edge.gallery.data.QUERIT_API_KEY_PREF
 import com.google.ai.edge.gallery.proto.Theme
 import com.google.ai.edge.gallery.ui.common.ClickableLink
 import com.google.ai.edge.gallery.ui.common.tos.AppTosDialog
@@ -95,6 +99,7 @@ fun SettingsDialog(
   onDismissed: () -> Unit,
 ) {
   var selectedTheme by remember { mutableStateOf(curThemeOverride) }
+  val coroutineScope = rememberCoroutineScope()
   var hfToken by remember { mutableStateOf(modelManagerViewModel.getTokenStatusAndData().data) }
   val dateFormatter = remember {
     DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm:ss")
@@ -106,6 +111,16 @@ fun SettingsDialog(
   val focusRequester = remember { FocusRequester() }
   val interactionSource = remember { MutableInteractionSource() }
   var showTos by remember { mutableStateOf(false) }
+
+  // Querit API key state.
+  var queritApiKey by remember {
+    mutableStateOf(
+      modelManagerViewModel.dataStoreRepository.readSecret(QUERIT_API_KEY_PREF) ?: ""
+    )
+  }
+  var queritKeyInput by remember { mutableStateOf("") }
+  var isQueritKeyFocused by remember { mutableStateOf(false) }
+  val queritKeyFocusRequester = remember { FocusRequester() }
 
   Dialog(onDismissRequest = onDismissed) {
     val focusManager = LocalFocusManager.current
@@ -291,7 +306,114 @@ fun SettingsDialog(
             }
           }
 
-          // Third party licenses.
+          // Querit search API key.
+          Column(
+            modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {},
+            verticalArrangement = Arrangement.spacedBy(4.dp),
+          ) {
+            Text(
+              "Querit search API key",
+              style = MaterialTheme.typography.titleSmall.copy(fontWeight = FontWeight.Medium),
+            )
+            if (queritApiKey.isNotEmpty()) {
+              Text(
+                queritApiKey.substring(0, min(12, queritApiKey.length)) + "...",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            } else {
+              Text(
+                "Not set",
+                style = MaterialTheme.typography.bodyMedium,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+              Text(
+                "Required to enable web search for Gemma-4 models",
+                style = MaterialTheme.typography.bodySmall,
+                color = MaterialTheme.colorScheme.onSurfaceVariant,
+              )
+            }
+            Row(horizontalArrangement = Arrangement.spacedBy(4.dp)) {
+              OutlinedButton(
+                onClick = {
+                  coroutineScope.launch(Dispatchers.IO) {
+                    modelManagerViewModel.dataStoreRepository.deleteSecret(QUERIT_API_KEY_PREF)
+                  }
+                  queritApiKey = ""
+                },
+                enabled = queritApiKey.isNotEmpty(),
+              ) {
+                Text("Clear")
+              }
+              val handleSaveQueritKey = {
+                if (queritKeyInput.isNotEmpty()) {
+                  val keyToSave = queritKeyInput
+                  queritApiKey = keyToSave
+                  queritKeyInput = ""
+                  focusManager.clearFocus()
+                  coroutineScope.launch(Dispatchers.IO) {
+                    modelManagerViewModel.dataStoreRepository.saveSecret(
+                      key = QUERIT_API_KEY_PREF,
+                      value = keyToSave,
+                    )
+                  }
+                }
+              }
+              BasicTextField(
+                value = queritKeyInput,
+                singleLine = true,
+                keyboardOptions = KeyboardOptions(imeAction = ImeAction.Done),
+                keyboardActions = KeyboardActions(onDone = { handleSaveQueritKey() }),
+                modifier =
+                  Modifier.fillMaxWidth()
+                    .padding(top = 4.dp)
+                    .focusRequester(queritKeyFocusRequester)
+                    .onFocusChanged { isQueritKeyFocused = it.isFocused },
+                onValueChange = { queritKeyInput = it },
+                textStyle = TextStyle(color = MaterialTheme.colorScheme.onSurface),
+                cursorBrush = SolidColor(MaterialTheme.colorScheme.onSurface),
+              ) { innerTextField ->
+                Box(
+                  modifier =
+                    Modifier.border(
+                        width = if (isQueritKeyFocused) 2.dp else 1.dp,
+                        color =
+                          if (isQueritKeyFocused) MaterialTheme.colorScheme.primary
+                          else MaterialTheme.colorScheme.outline,
+                        shape = CircleShape,
+                      )
+                      .height(40.dp),
+                  contentAlignment = Alignment.CenterStart,
+                ) {
+                  Row(verticalAlignment = Alignment.CenterVertically) {
+                    Box(modifier = Modifier.padding(start = 16.dp).weight(1f)) {
+                      if (queritKeyInput.isEmpty()) {
+                        Text(
+                          "Enter API key",
+                          color = MaterialTheme.colorScheme.onSurfaceVariant,
+                          style = MaterialTheme.typography.bodySmall,
+                        )
+                      }
+                      innerTextField()
+                    }
+                    if (queritKeyInput.isNotEmpty()) {
+                      IconButton(
+                        modifier = Modifier.offset(x = 1.dp),
+                        onClick = handleSaveQueritKey,
+                      ) {
+                        Icon(
+                          Icons.Rounded.CheckCircle,
+                          contentDescription = stringResource(R.string.cd_done_icon),
+                        )
+                      }
+                    }
+                  }
+                }
+              }
+            }
+          }
+
+          // Third-party libraries.
           Column(modifier = Modifier.fillMaxWidth().semantics(mergeDescendants = true) {}) {
             Text(
               "Third-party libraries",

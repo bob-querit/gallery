@@ -27,6 +27,11 @@ import androidx.compose.foundation.layout.padding
 import androidx.compose.material3.MaterialTheme
 import androidx.compose.material3.Text
 import androidx.compose.runtime.Composable
+import androidx.compose.runtime.LaunchedEffect
+import androidx.compose.runtime.collectAsState
+import androidx.compose.runtime.getValue
+import androidx.compose.runtime.remember
+import com.google.ai.edge.gallery.ui.modelmanager.ModelInitializationStatusType
 import androidx.compose.ui.Alignment
 import androidx.compose.ui.Modifier
 import androidx.compose.ui.platform.LocalContext
@@ -39,6 +44,7 @@ import com.google.ai.edge.gallery.R
 import com.google.ai.edge.gallery.data.BuiltInTaskId
 import com.google.ai.edge.gallery.data.Model
 import com.google.ai.edge.gallery.data.ModelCapability
+import com.google.ai.edge.gallery.data.QUERIT_API_KEY_PREF
 import com.google.ai.edge.gallery.data.RuntimeType
 import com.google.ai.edge.gallery.data.Task
 import com.google.ai.edge.gallery.firebaseAnalytics
@@ -50,6 +56,7 @@ import com.google.ai.edge.gallery.ui.common.chat.SendMessageTrigger
 import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.google.ai.edge.gallery.ui.theme.emptyStateContent
 import com.google.ai.edge.gallery.ui.theme.emptyStateTitle
+import com.google.ai.edge.litertlm.tool
 
 private const val TAG = "AGLlmChatScreen"
 
@@ -191,6 +198,41 @@ fun ChatViewWrapper(
 ) {
   val context = LocalContext.current
   val task = modelManagerViewModel.getTaskById(id = taskId)!!
+  val modelManagerUiState by modelManagerViewModel.uiState.collectAsState()
+
+  // Search tools for models that support function calling (Gemma-4 family).
+  val searchTools = remember {
+    SearchTools().also { st ->
+      st.apiKeyProvider = {
+        modelManagerViewModel.dataStoreRepository.readSecret(QUERIT_API_KEY_PREF)
+      }
+    }
+  }
+
+  /** Returns true if [model] should have the web-search tool enabled. */
+  fun modelSupportsSearch(model: Model): Boolean =
+    model.name.contains("gemma-4", ignoreCase = true)
+
+  /** Resets the session, injecting the search tool when the model supports it. */
+  fun resetSessionWithSearchTools(model: Model) {
+    viewModel.resetSession(
+      task = task,
+      model = model,
+      supportImage = showImagePicker,
+      supportAudio = showAudioPicker,
+      tools = if (modelSupportsSearch(model)) listOf(tool(searchTools)) else listOf(),
+    )
+  }
+
+  // When the selected model finishes initializing, reset the conversation so that search tools
+  // are injected into the very first session (not only after the user taps "Reset").
+  val selectedModel = modelManagerUiState.selectedModel
+  val initStatus = modelManagerUiState.modelInitializationStatus[selectedModel.name]?.status
+  LaunchedEffect(initStatus, selectedModel.name) {
+    if (initStatus == ModelInitializationStatusType.INITIALIZED) {
+      resetSessionWithSearchTools(selectedModel)
+    }
+  }
 
   ChatView(
     task = task,
@@ -267,12 +309,7 @@ fun ChatViewWrapper(
       if (onResetSessionClickedOverride != null) {
         onResetSessionClickedOverride(task, model)
       } else {
-        viewModel.resetSession(
-          task = task,
-          model = model,
-          supportImage = showImagePicker,
-          supportAudio = showAudioPicker,
-        )
+        resetSessionWithSearchTools(model)
       }
     },
     showStopButtonInInputWhenInProgress = true,
