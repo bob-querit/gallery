@@ -56,9 +56,31 @@ import com.google.ai.edge.gallery.ui.common.chat.SendMessageTrigger
 import com.google.ai.edge.gallery.ui.modelmanager.ModelManagerViewModel
 import com.google.ai.edge.gallery.ui.theme.emptyStateContent
 import com.google.ai.edge.gallery.ui.theme.emptyStateTitle
+import com.google.ai.edge.litertlm.Contents
 import com.google.ai.edge.litertlm.tool
+import java.time.LocalDateTime
+import java.time.format.DateTimeFormatter
 
 private const val TAG = "AGLlmChatScreen"
+
+private val DATETIME_FORMATTER = DateTimeFormatter.ofPattern("yyyy-MM-dd HH:mm")
+
+private fun modelSupportsSearch(model: Model): Boolean =
+  model.name.contains("gemma-4", ignoreCase = true)
+
+private fun buildSystemInstruction(supportsSearch: Boolean): Contents {
+  val now = LocalDateTime.now().format(DATETIME_FORMATTER)
+  return if (supportsSearch) {
+    Contents.of(
+      """You are a helpful research assistant with access to a web_search tool.
+Today's date and time is $now.
+When the user's question requires current or factual information, call web_search with concise keywords. You may call it multiple times for different sub-queries.
+If the question does not need a search (e.g. a greeting or pure reasoning task), answer directly without calling any tool."""
+    )
+  } else {
+    Contents.of("Today's date and time is $now.")
+  }
+}
 
 @Composable
 fun LlmChatScreen(
@@ -209,18 +231,17 @@ fun ChatViewWrapper(
     }
   }
 
-  /** Returns true if [model] should have the web-search tool enabled. */
-  fun modelSupportsSearch(model: Model): Boolean =
-    model.name.contains("gemma-4", ignoreCase = true)
-
-  /** Resets the session, injecting the search tool when the model supports it. */
-  fun resetSessionWithSearchTools(model: Model) {
+  /** Resets the session with the appropriate tools and a fresh system instruction. */
+  fun resetSessionWithSearchTools(model: Model, onDone: () -> Unit = {}) {
+    val supportsSearch = modelSupportsSearch(model)
     viewModel.resetSession(
       task = task,
       model = model,
+      systemInstruction = buildSystemInstruction(supportsSearch),
       supportImage = showImagePicker,
       supportAudio = showAudioPicker,
-      tools = if (modelSupportsSearch(model)) listOf(tool(searchTools)) else listOf(),
+      tools = if (supportsSearch) listOf(tool(searchTools)) else listOf(),
+      onDone = onDone,
     )
   }
 
@@ -239,10 +260,6 @@ fun ChatViewWrapper(
     viewModel = viewModel,
     modelManagerViewModel = modelManagerViewModel,
     onSendMessage = { model, messages ->
-      for (message in messages) {
-        viewModel.addMessage(model = model, message = message)
-      }
-
       var text = ""
       val images: MutableList<Bitmap> = mutableListOf()
       val audioMessages: MutableList<ChatMessageAudioClip> = mutableListOf()
@@ -261,24 +278,31 @@ fun ChatViewWrapper(
         if (text.isNotEmpty()) {
           modelManagerViewModel.addTextInputHistory(text)
         }
-        viewModel.generateResponse(
-          model = model,
-          input = text,
-          images = images,
-          audioMessages = audioMessages,
-          onFirstToken = onFirstToken,
-          onDone = { onGenerateResponseDone(model) },
-          onError = { errorMessage ->
-            viewModel.handleError(
-              context = context,
-              task = task,
-              model = model,
-              errorMessage = errorMessage,
-              modelManagerViewModel = modelManagerViewModel,
-            )
-          },
-          allowThinking = task.allowCapability(ModelCapability.LLM_THINKING, model),
-        )
+        // Reset the session before every inference to prevent KV-cache overflow.
+        // User messages are added in onDone, after clearAllMessages has run.
+        resetSessionWithSearchTools(model) {
+          for (message in messages) {
+            viewModel.addMessage(model = model, message = message)
+          }
+          viewModel.generateResponse(
+            model = model,
+            input = text,
+            images = images,
+            audioMessages = audioMessages,
+            onFirstToken = onFirstToken,
+            onDone = { onGenerateResponseDone(model) },
+            onError = { errorMessage ->
+              viewModel.handleError(
+                context = context,
+                task = task,
+                model = model,
+                errorMessage = errorMessage,
+                modelManagerViewModel = modelManagerViewModel,
+              )
+            },
+            allowThinking = task.allowCapability(ModelCapability.LLM_THINKING, model),
+          )
+        }
 
         firebaseAnalytics?.logEvent(
           GalleryEvent.GENERATE_ACTION.id,

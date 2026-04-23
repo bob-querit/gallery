@@ -46,7 +46,8 @@ import kotlinx.coroutines.launch
 private const val TAG = "AGLlmChatViewModel"
 
 @OptIn(ExperimentalApi::class)
-open class LlmChatViewModelBase() : ChatViewModel() {
+open class LlmChatViewModelBase : ChatViewModel() {
+
   fun generateResponse(
     model: Model,
     input: String,
